@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LMS & TMS Tenant Database Retriever</title>
+  
+  <!-- Bootstrap 5 CSS -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <!-- Google Fonts: Inter -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  
+  <!-- Custom Stylesheet -->
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- Top Navbar -->
+  <nav class="navbar navbar-expand-lg border-bottom border-secondary-subtle sticky-top backdrop-blur">
+    <div class="container py-1">
+      <a class="navbar-brand d-flex align-items-center gap-2 fw-bold" href="#">
+        <div class="brand-icon">
+          <i class="fa-solid fa-database text-primary"></i>
+        </div>
+        <span>Kyan <span class="text-primary">DB Puller</span></span>
+        <span class="badge bg-primary-subtle text-primary border border-primary-subtle rounded-pill ms-2 font-monospace">v1.0</span>
+      </a>
+
+      <div class="d-flex align-items-center gap-3">
+        <!-- Status Indicator Pill -->
+        <div id="connStatusBadge" class="badge rounded-pill bg-dark border border-secondary px-3 py-2 d-flex align-items-center gap-2">
+          <span class="status-dot online"></span>
+          <span id="connStatusText">Checking Status...</span>
+        </div>
+
+        <!-- Settings Button -->
+        <button class="btn btn-outline-secondary btn-sm rounded-pill px-3" data-bs-toggle="modal" data-bs-target="#settingsModal">
+          <i class="fa-solid fa-gear me-1"></i> Settings
+        </button>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Main Content Container -->
+  <main class="container my-5">
+    <div class="row justify-content-center">
+      <div class="col-lg-10 col-xl-9">
+
+        <!-- Header Section -->
+        <div class="text-center mb-4">
+          <h1 class="fw-extrabold display-6 mb-2">Production Tenant Database Retrieval</h1>
+          <p class="text-secondary fs-6">
+            Enter a domain name to pull the tenant's database from production into your local Laragon MySQL for debugging.
+          </p>
+        </div>
+
+        <!-- Main Form Card -->
+        <div class="card shadow-lg border border-secondary-subtle rounded-4 main-card mb-4">
+          <div class="card-body p-4 p-md-5">
+            <form id="pullForm">
+
+              <!-- System Selector (LMS vs TMS) -->
+              <div class="mb-4">
+                <label class="form-label fw-semibold text-uppercase fs-7 text-secondary tracking-wider">Select Project System</label>
+                <div class="row g-3">
+                  <div class="col-md-6">
+                    <input type="radio" class="btn-check" name="systemRadio" id="systemTMS" value="tms" checked>
+                    <label class="btn btn-outline-primary system-select-btn w-100 p-3 text-start rounded-3" for="systemTMS">
+                      <div class="d-flex align-items-center justify-content-between mb-1">
+                        <span class="fw-bold fs-5"><i class="fa-solid fa-graduation-cap me-2 text-primary"></i>TMS Training</span>
+                        <span class="badge bg-primary text-white">alamlms_tenancy</span>
+                      </div>
+                      <small class="text-secondary d-block">Training Management System with multi-tenancy</small>
+                    </label>
+                  </div>
+                  <div class="col-md-6">
+                    <input type="radio" class="btn-check" name="systemRadio" id="systemLMS" value="lms">
+                    <label class="btn btn-outline-primary system-select-btn w-100 p-3 text-start rounded-3" for="systemLMS">
+                      <div class="d-flex align-items-center justify-content-between mb-1">
+                        <span class="fw-bold fs-5"><i class="fa-solid fa-book-open me-2 text-info"></i>LMS School</span>
+                        <span class="badge bg-info text-dark">alamlms</span>
+                      </div>
+                      <small class="text-secondary d-block">School Learning Management System</small>
+                    </label>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Domain Input with Quick Suggestions -->
+              <div class="mb-4">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                  <label for="domainInput" class="form-label fw-semibold text-uppercase fs-7 text-secondary tracking-wider mb-0">
+                    Tenant Domain Name or Subdomain
+                  </label>
+                  <button type="button" class="btn btn-link btn-sm p-0 text-decoration-none text-primary" id="loadDomainsBtn">
+                    <i class="fa-solid fa-rotate me-1"></i> Browse Production Domains
+                  </button>
+                </div>
+
+                <div class="input-group input-group-lg shadow-sm">
+                  <span class="input-group-text bg-dark border-secondary-subtle text-secondary">
+                    <i class="fa-solid fa-globe"></i>
+                  </span>
+                  <input type="text" class="form-control bg-dark border-secondary-subtle" id="domainInput" 
+                    placeholder="e.g. academy.strategizepro.com.sa or smartminds" required autocomplete="off">
+                  <button class="btn btn-outline-secondary border-secondary-subtle" type="button" id="pasteBtn" title="Paste from clipboard">
+                    <i class="fa-regular fa-clipboard"></i>
+                  </button>
+                </div>
+
+                <!-- Dropdown suggestions list -->
+                <div id="domainsSuggestions" class="list-group position-absolute w-100 shadow-lg mt-1 d-none z-3"></div>
+                <div class="form-text text-secondary mt-1">
+                  You can type the full domain (e.g. <code>academy.strategizepro.com.sa</code>) or tenant ID (e.g. <code>strategise</code>).
+                </div>
+              </div>
+
+              <!-- Options Accordion / Advanced Switches -->
+              <div class="row g-3 mb-4 p-3 bg-dark-subtle rounded-3 border border-secondary-subtle">
+                <div class="col-md-6">
+                  <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" role="switch" id="addLocalDomainSwitch" checked>
+                    <label class="form-check-label fw-medium" for="addLocalDomainSwitch">
+                      Auto-register <code>&lt;tenant&gt;.localhost</code>
+                    </label>
+                    <div class="text-secondary fs-7">Enables 1-click local browser debugging without editing hosts.</div>
+                  </div>
+                </div>
+                <div class="col-md-6">
+                  <div class="form-check form-switch">
+                    <input class="form-check-input" type="checkbox" role="switch" id="dropIfExistsSwitch" checked>
+                    <label class="form-check-label fw-medium" for="dropIfExistsSwitch">
+                      Drop local DB if it already exists
+                    </label>
+                    <div class="text-secondary fs-7">Ensures a clean, fresh sync matching production.</div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Connection Mode -->
+              <div class="mb-4">
+                <label class="form-label fw-semibold text-uppercase fs-7 text-secondary tracking-wider">Extraction Method</label>
+                <div class="d-flex gap-2">
+                  <div class="form-check form-check-inline">
+                    <input class="form-check-input" type="radio" name="modeRadio" id="modeAuto" value="auto" checked>
+                    <label class="form-check-label" for="modeAuto">
+                      <span class="badge bg-success-subtle text-success me-1">Recommended</span> Auto Detect (Direct or PMA)
+                    </label>
+                  </div>
+                  <div class="form-check form-check-inline">
+                    <input class="form-check-input" type="radio" name="modeRadio" id="modePma" value="pma">
+                    <label class="form-check-label" for="modePma">phpMyAdmin HTTPS Bridge</label>
+                  </div>
+                  <div class="form-check form-check-inline">
+                    <input class="form-check-input" type="radio" name="modeRadio" id="modeDirect" value="direct">
+                    <label class="form-check-label" for="modeDirect">Direct MySQL (Port 3306)</label>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Submit Button -->
+              <button type="submit" id="submitBtn" class="btn btn-primary btn-lg w-100 py-3 fw-bold rounded-3 shadow d-flex align-items-center justify-content-center gap-2">
+                <i class="fa-solid fa-cloud-arrow-down fs-5"></i>
+                <span>Pull Tenant Database to Local</span>
+              </button>
+            </form>
+          </div>
+        </div>
+
+        <!-- Live Progress Section (Hidden initially) -->
+        <div id="progressSection" class="card shadow-lg border border-primary-subtle rounded-4 mb-4 d-none">
+          <div class="card-body p-4">
+            
+            <div class="d-flex justify-content-between align-items-center mb-3">
+              <h5 class="card-title fw-bold mb-0 d-flex align-items-center gap-2">
+                <span class="spinner-border spinner-border-sm text-primary" role="status" id="spinnerIcon"></span>
+                <span id="progressTitle">Retrieving Database...</span>
+              </h5>
+              <span id="percentBadge" class="badge bg-primary fs-6 font-monospace">0%</span>
+            </div>
+
+            <!-- Visual Step Badges -->
+            <div class="d-flex justify-content-between align-items-center mb-3 text-center progress-steps">
+              <div class="step-item active" id="step1">
+                <div class="step-circle"><i class="fa-solid fa-server"></i></div>
+                <div class="step-label">1. Connect</div>
+              </div>
+              <div class="step-line" id="line1"></div>
+              <div class="step-item" id="step2">
+                <div class="step-circle"><i class="fa-solid fa-magnifying-glass"></i></div>
+                <div class="step-label">2. Lookup</div>
+              </div>
+              <div class="step-line" id="line2"></div>
+              <div class="step-item" id="step3">
+                <div class="step-circle"><i class="fa-solid fa-cloud-arrow-down"></i></div>
+                <div class="step-label">3. Export</div>
+              </div>
+              <div class="step-line" id="line3"></div>
+              <div class="step-item" id="step4">
+                <div class="step-circle"><i class="fa-solid fa-file-import"></i></div>
+                <div class="step-label">4. Restore</div>
+              </div>
+              <div class="step-line" id="line4"></div>
+              <div class="step-item" id="step5">
+                <div class="step-circle"><i class="fa-solid fa-check"></i></div>
+                <div class="step-label">5. Sync Central</div>
+              </div>
+            </div>
+
+            <!-- Dynamic Progress Bar -->
+            <div class="progress rounded-pill mb-3" style="height: 12px;">
+              <div id="progressBar" class="progress-bar progress-bar-striped progress-bar-animated bg-primary" 
+                   role="progressbar" style="width: 0%;"></div>
+            </div>
+
+            <div class="text-secondary small font-monospace" id="currentActionText">Initializing connection...</div>
+          </div>
+        </div>
+
+        <!-- Success Result Card (Hidden initially) -->
+        <div id="resultCard" class="card shadow-lg border-success rounded-4 mb-4 d-none">
+          <div class="card-body p-4 p-md-5">
+            <div class="d-flex align-items-center gap-3 mb-4">
+              <div class="success-icon bg-success-subtle text-success p-3 rounded-circle">
+                <i class="fa-solid fa-circle-check fs-2"></i>
+              </div>
+              <div>
+                <h4 class="fw-bold text-success mb-1">Database Pulled & Restored Successfully!</h4>
+                <p class="text-secondary mb-0">The tenant database is live and ready for debugging in your local environment.</p>
+              </div>
+            </div>
+
+            <div class="row g-3 mb-4">
+              <div class="col-sm-6 col-md-3">
+                <div class="p-3 bg-dark-subtle rounded-3 border border-secondary-subtle">
+                  <div class="text-secondary fs-7 text-uppercase fw-semibold">Tenant ID</div>
+                  <div class="fs-5 fw-bold text-primary font-monospace mt-1" id="resTenantId">-</div>
+                </div>
+              </div>
+              <div class="col-sm-6 col-md-3">
+                <div class="p-3 bg-dark-subtle rounded-3 border border-secondary-subtle">
+                  <div class="text-secondary fs-7 text-uppercase fw-semibold">Database Name</div>
+                  <div class="fs-5 fw-bold text-info font-monospace mt-1" id="resDbName">-</div>
+                </div>
+              </div>
+              <div class="col-sm-6 col-md-3">
+                <div class="p-3 bg-dark-subtle rounded-3 border border-secondary-subtle">
+                  <div class="text-secondary fs-7 text-uppercase fw-semibold">Tables Restored</div>
+                  <div class="fs-5 fw-bold text-light font-monospace mt-1" id="resTableCount">0</div>
+                </div>
+              </div>
+              <div class="col-sm-6 col-md-3">
+                <div class="p-3 bg-dark-subtle rounded-3 border border-secondary-subtle">
+                  <div class="text-secondary fs-7 text-uppercase fw-semibold">Duration & Size</div>
+                  <div class="fs-5 fw-bold text-warning font-monospace mt-1" id="resDuration">-</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Quick Action Links -->
+            <div class="d-flex flex-wrap gap-2">
+              <a href="#" target="_blank" id="openLocalAppBtn" class="btn btn-success fw-bold px-4 py-2 rounded-3">
+                <i class="fa-solid fa-arrow-up-right-from-square me-2"></i> Open in Local Browser (<span id="resLocalUrl"></span>)
+              </a>
+              <a href="http://localhost/phpmyadmin" target="_blank" class="btn btn-outline-secondary px-4 py-2 rounded-3">
+                <i class="fa-solid fa-table-columns me-2"></i> Open Local phpMyAdmin
+              </a>
+              <button class="btn btn-outline-light px-3 py-2 rounded-3" id="resetBtn">
+                <i class="fa-solid fa-rotate-left me-2"></i> Pull Another Database
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Live Terminal Log Box -->
+        <div class="card shadow-lg border border-secondary-subtle rounded-4 overflow-hidden mb-4">
+          <div class="card-header bg-dark d-flex justify-content-between align-items-center py-2 px-3 border-bottom border-secondary-subtle">
+            <div class="d-flex align-items-center gap-2">
+              <div class="terminal-dots">
+                <span class="dot red"></span>
+                <span class="dot yellow"></span>
+                <span class="dot green"></span>
+              </div>
+              <span class="font-monospace text-secondary fs-7 ms-2">Live Process Output</span>
+            </div>
+            <div>
+              <button class="btn btn-sm btn-link text-secondary p-0 text-decoration-none" id="clearLogBtn" title="Clear log">
+                <i class="fa-solid fa-trash-can"></i>
+              </button>
+            </div>
+          </div>
+          <div class="card-body p-3 bg-black font-monospace fs-7 text-light terminal-window" id="terminalLog">
+            <div class="text-secondary">// Ready. Select project and enter domain to begin.</div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+  </main>
+
+  <!-- Settings Modal -->
+  <div class="modal fade" id="settingsModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-centered">
+      <div class="modal-content border border-secondary-subtle rounded-4">
+        <div class="modal-header border-bottom border-secondary-subtle">
+          <h5 class="modal-title fw-bold"><i class="fa-solid fa-sliders me-2 text-primary"></i>Configuration & Credentials</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body p-4">
+          <form id="settingsForm">
+
+            <!-- Test Connection Section -->
+            <div class="p-3 bg-dark-subtle rounded-3 border border-secondary-subtle mb-4">
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <span class="fw-bold">Database Connectivity Tests</span>
+                <button type="button" class="btn btn-sm btn-outline-primary" id="testConnBtn">
+                  <i class="fa-solid fa-bolt me-1"></i> Test All Connections Now
+                </button>
+              </div>
+              <div id="connTestResults" class="small mt-2 font-monospace"></div>
+            </div>
+
+            <h6 class="fw-bold text-primary mb-3"><i class="fa-solid fa-cloud me-2"></i>Production Server</h6>
+            <div class="row g-3 mb-4">
+              <div class="col-md-8">
+                <label class="form-label fs-7">Host / IP</label>
+                <input type="text" class="form-control font-monospace" id="cfgProdHost" required>
+              </div>
+              <div class="col-md-4">
+                <label class="form-label fs-7">Port</label>
+                <input type="number" class="form-control font-monospace" id="cfgProdPort" required>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label fs-7">Username</label>
+                <input type="text" class="form-control font-monospace" id="cfgProdUsername" required>
+              </div>
+              <div class="col-md-6">
+                <label class="form-label fs-7">Password</label>
+                <input type="password" class="form-control font-monospace" id="cfgProdPassword" placeholder="(leave empty to keep current)">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label fs-7">TMS Central DB</label>
+                <input type="text" class="form-control font-monospace" id="cfgProdTmsDb" value="alamlms_tenancy">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label fs-7">LMS Central DB</label>
+                <input type="text" class="form-control font-monospace" id="cfgProdLmsDb" value="alamlms">
+              </div>
+              <div class="col-12">
+                <label class="form-label fs-7">phpMyAdmin URL</label>
+                <input type="text" class="form-control font-monospace" id="cfgPmaUrl">
+              </div>
+            </div>
+
+            <h6 class="fw-bold text-success mb-3"><i class="fa-solid fa-laptop me-2"></i>Local Environment (Laragon)</h6>
+            <div class="row g-3 mb-4">
+              <div class="col-md-8">
+                <label class="form-label fs-7">Host</label>
+                <input type="text" class="form-control font-monospace" id="cfgLocalHost" value="127.0.0.1">
+              </div>
+              <div class="col-md-4">
+                <label class="form-label fs-7">Port</label>
+                <input type="number" class="form-control font-monospace" id="cfgLocalPort" value="3306">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label fs-7">Username</label>
+                <input type="text" class="form-control font-monospace" id="cfgLocalUsername" value="root">
+              </div>
+              <div class="col-md-6">
+                <label class="form-label fs-7">Password</label>
+                <input type="password" class="form-control font-monospace" id="cfgLocalPassword" placeholder="(empty by default)">
+              </div>
+            </div>
+
+            <h6 class="fw-bold text-secondary mb-3"><i class="fa-solid fa-terminal me-2"></i>MySQL CLI Tools Path</h6>
+            <div class="row g-3">
+              <div class="col-12">
+                <label class="form-label fs-7">mysql.exe Path</label>
+                <input type="text" class="form-control font-monospace" id="cfgMysqlBin">
+              </div>
+              <div class="col-12">
+                <label class="form-label fs-7">mysqldump.exe Path</label>
+                <input type="text" class="form-control font-monospace" id="cfgMysqldumpBin">
+              </div>
+            </div>
+
+          </form>
+        </div>
+        <div class="modal-footer border-top border-secondary-subtle">
+          <button type="button" class="btn btn-secondary rounded-3" data-bs-dismiss="modal">Close</button>
+          <button type="button" class="btn btn-primary rounded-3" id="saveSettingsBtn">Save Settings</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bootstrap 5 Bundle JS -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+  <!-- Application JS -->
+  <script src="js/app.js"></script>
+</body>
+</html>
