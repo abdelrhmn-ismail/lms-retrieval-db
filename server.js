@@ -193,10 +193,10 @@ app.get('/api/pull', async (req, res) => {
     log(`💾 Production Database: [${databaseName}]`, 'success');
 
     // ----------------------------------------------------
-    // STEP 3: Export Database from Production
+    // STEP 3: Export Database from Production (Gzipped)
     // ----------------------------------------------------
-    progress(3, 55, `Exporting database "${databaseName}" from production...`);
-    const dumpFileName = `${databaseName}_${Date.now()}.sql`;
+    progress(3, 55, `Exporting database "${databaseName}" from production (gzipped)...`);
+    const dumpFileName = `${databaseName}_${Date.now()}.sql.gz`;
     const dumpFilePath = path.join(dumpsDir, dumpFileName);
 
     let exportResult = null;
@@ -207,7 +207,7 @@ app.get('/api/pull', async (req, res) => {
     }
 
     const fileSizeMb = (fs.statSync(dumpFilePath).size / (1024 * 1024)).toFixed(2);
-    log(`📥 Successfully downloaded dump file: ${dumpFileName} (${fileSizeMb} MB)`, 'success');
+    log(`📥 Successfully downloaded gzipped dump: ${dumpFileName} (${fileSizeMb} MB compressed)`, 'success');
 
     // ----------------------------------------------------
     // STEP 4: Prepare & Import into Local MySQL
@@ -216,7 +216,7 @@ app.get('/api/pull', async (req, res) => {
     log(`Preparing local database [${databaseName}] (dropIfExists: ${dropIfExists})...`);
     await localDb.prepareLocalDatabase(databaseName, dropIfExists);
 
-    log(`Importing schema & data into local MySQL...`);
+    log(`Streaming & decompressing schema and data into local MySQL...`);
     await localDb.importSqlDump(databaseName, dumpFilePath, (msg) => log(msg));
 
     const dbStats = await localDb.getLocalDatabaseStats(databaseName);
@@ -244,7 +244,7 @@ app.get('/api/pull', async (req, res) => {
     try {
       if (fs.existsSync(dumpFilePath)) {
         fs.unlinkSync(dumpFilePath);
-        log(`Cleaned up temporary dump file.`);
+        log(`Cleaned up temporary dump file (${dumpFileName}).`);
       }
     } catch {
       // ignore
