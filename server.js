@@ -2,7 +2,7 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
-const { getConfig, updateConfig } = require('./config');
+const { getConfig, updateConfig, normalizeSystem, SYSTEM_KEYS } = require('./config');
 const localDb = require('./lib/localDb');
 const mysqlDirect = require('./lib/mysqlDirect');
 const { PmaSession, testPmaConnection } = require('./lib/pmaBridge');
@@ -21,24 +21,23 @@ if (!fs.existsSync(dumpsDir)) {
 }
 
 // 1. Get current configuration
+// Passwords are never sent to the browser, only whether one is set.
 app.get('/api/config', (req, res) => {
   const cfg = getConfig();
+  const systems = {};
+  for (const key of SYSTEM_KEYS) {
+    const { password, ...rest } = cfg.systems[key];
+    systems[key] = { ...rest, hasPassword: !!password };
+  }
   res.json({
     port: cfg.port,
-    prodHost: cfg.prod.host,
-    prodPort: cfg.prod.port,
-    prodUsername: cfg.prod.username,
-    prodPassword: cfg.prod.password ? '••••••••' : '',
-    hasProdPassword: !!cfg.prod.password,
-    prodLmsDb: cfg.prod.lmsDb,
-    prodTmsDb: cfg.prod.tmsDb,
-    pmaUrl: cfg.prod.pmaUrl,
-    localHost: cfg.local.host,
-    localPort: cfg.local.port,
-    localUsername: cfg.local.username,
-    localPassword: cfg.local.password ? '••••••••' : '',
-    localLmsDb: cfg.local.lmsDb,
-    localTmsDb: cfg.local.tmsDb,
+    systems,
+    local: {
+      host: cfg.local.host,
+      port: cfg.local.port,
+      username: cfg.local.username,
+      hasPassword: !!cfg.local.password,
+    },
     mysqlBin: cfg.bins.mysql,
     mysqldumpBin: cfg.bins.mysqldump
   });
@@ -47,57 +46,66 @@ app.get('/api/config', (req, res) => {
 // 2. Update configuration
 app.post('/api/config', (req, res) => {
   try {
-    const updated = updateConfig(req.body);
-    res.json({ success: true, config: updated });
+    updateConfig(req.body);
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
 // 3. Test connections
+// Result shape: { local: {success, message}, systems: { lms: {label, host, direct: {...}, pma: {...}}, ... } }
 app.get('/api/test-connection', async (req, res) => {
+  const cfg = getConfig();
+  const localRes = await localDb.testLocalConnection();
   const results = {
-    local: { name: 'Local Laragon MySQL', status: 'testing' },
-    prodDirect: { name: 'Production MySQL (Direct 3306)', status: 'testing' },
-    prodPma: { name: 'Production phpMyAdmin (HTTPS)', status: 'testing' }
+    local: localRes.success
+      ? { success: true, message: `Connected (v${localRes.version})` }
+      : { success: false, message: localRes.error },
+    systems: {}
   };
 
-  // Local MySQL test
-  const localRes = await localDb.testLocalConnection();
-  results.local = localRes.success 
-    ? { success: true, message: `Connected (v${localRes.version})` }
-    : { success: false, message: localRes.error };
-
-  // Production Direct test
-  const prodDirectRes = await mysqlDirect.testProdConnection();
-  results.prodDirect = prodDirectRes.success 
-    ? { success: true, message: `Connected (v${prodDirectRes.version})` }
-    : { success: false, message: `Direct port 3306 unreachable: ${prodDirectRes.error}` };
-
-  // Production PMA test
-  const prodPmaRes = await testPmaConnection();
-  results.prodPma = prodPmaRes.success 
-    ? { success: true, message: 'Authenticated successfully' }
-    : { success: false, message: prodPmaRes.error };
+  // Each system has its own server: test them in parallel.
+  await Promise.all(SYSTEM_KEYS.map(async (key) => {
+    const sys = cfg.systems[key];
+    const [directRes, pmaRes] = await Promise.all([
+      mysqlDirect.testProdConnection(key),
+      testPmaConnection(key)
+    ]);
+    results.systems[key] = {
+      label: sys.label,
+      host: sys.host,
+      direct: directRes.success
+        ? { success: true, message: `Connected to ${sys.host} (v${directRes.version})` }
+        : { success: false, message: `Direct ${sys.host}:${sys.port} unreachable: ${directRes.error}` },
+      pma: pmaRes.success
+        ? { success: true, message: `Authenticated (${sys.pmaUrl})` }
+        : { success: false, message: `${sys.pmaUrl}: ${pmaRes.error}` }
+    };
+  }));
 
   res.json(results);
 });
 
 // 4. Domains autocomplete list
 app.get('/api/domains', async (req, res) => {
-  const system = req.query.system === 'lms' ? 'lms' : 'tms';
+  let system;
+  try {
+    system = normalizeSystem(req.query.system);
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
   const query = req.query.q || '';
-  const cfg = getConfig();
-  const centralDb = system === 'lms' ? cfg.prod.lmsDb : cfg.prod.tmsDb;
+  const centralDb = getConfig().systems[system].centralDb;
 
   try {
     // Try direct MySQL first
     try {
-      const rows = await mysqlDirect.getDomainsListDirect(centralDb, query, 60);
+      const rows = await mysqlDirect.getDomainsListDirect(system, query, 60);
       return res.json({ success: true, domains: rows });
     } catch {
       // Fallback to PMA session
-      const pma = new PmaSession();
+      const pma = new PmaSession(system);
       await pma.login();
       const rows = await pma.getDomainsList(centralDb, query, 60);
       return res.json({ success: true, domains: rows });
@@ -130,14 +138,21 @@ app.get('/api/pull', async (req, res) => {
 
   const startTime = Date.now();
   const cfg = getConfig();
-  const system = req.query.system === 'lms' ? 'lms' : 'tms';
+  let system;
+  try {
+    system = normalizeSystem(req.query.system);
+  } catch (err) {
+    sendEvent('error', { message: err.message });
+    return res.end();
+  }
+  const sys = cfg.systems[system];
   const domainInput = (req.query.domain || '').trim();
   const mode = req.query.mode || 'auto'; // 'auto', 'direct', 'pma'
   const dropIfExists = req.query.dropIfExists === 'true';
   const addLocalDomain = req.query.addLocalDomain !== 'false';
 
-  const prodCentralDb = system === 'lms' ? cfg.prod.lmsDb : cfg.prod.tmsDb;
-  const localCentralDb = system === 'lms' ? cfg.local.lmsDb : cfg.local.tmsDb;
+  const prodCentralDb = sys.centralDb;
+  const localCentralDb = sys.localCentralDb;
 
   if (!domainInput) {
     sendEvent('error', { message: 'Domain name is required.' });
@@ -145,7 +160,7 @@ app.get('/api/pull', async (req, res) => {
   }
 
   log(`🚀 Starting Database Retrieval for [${domainInput}] in [${system.toUpperCase()}]...`);
-  log(`Production Central DB: ${prodCentralDb} | Local Central DB: ${localCentralDb}`);
+  log(`Production server: ${sys.host}:${sys.port} | Central DB: ${prodCentralDb} | Local Central DB: ${localCentralDb}`);
 
   try {
     // ----------------------------------------------------
@@ -156,7 +171,7 @@ app.get('/api/pull', async (req, res) => {
 
     if (mode === 'auto') {
       log('Detecting optimal connection method...');
-      const directTest = await mysqlDirect.testProdConnection();
+      const directTest = await mysqlDirect.testProdConnection(system);
       if (directTest.success) {
         chosenMethod = 'direct';
         log('⚡ Direct MySQL connection is available! Using native mysqldump.', 'success');
@@ -176,9 +191,9 @@ app.get('/api/pull', async (req, res) => {
     let pmaSession = null;
 
     if (chosenMethod === 'direct') {
-      tenantInfo = await mysqlDirect.lookupTenantDirect(prodCentralDb, domainInput);
+      tenantInfo = await mysqlDirect.lookupTenantDirect(system, domainInput);
     } else {
-      pmaSession = new PmaSession();
+      pmaSession = new PmaSession(system);
       await pmaSession.login();
       tenantInfo = await pmaSession.lookupTenant(prodCentralDb, domainInput);
     }
@@ -201,7 +216,7 @@ app.get('/api/pull', async (req, res) => {
 
     let exportResult = null;
     if (chosenMethod === 'direct') {
-      exportResult = await mysqlDirect.dumpDatabaseDirect(databaseName, dumpFilePath, (msg) => log(msg));
+      exportResult = await mysqlDirect.dumpDatabaseDirect(system, databaseName, dumpFilePath, (msg) => log(msg));
     } else {
       exportResult = await pmaSession.exportDatabase(databaseName, dumpFilePath, (msg) => log(msg));
     }
@@ -214,10 +229,10 @@ app.get('/api/pull', async (req, res) => {
     // ----------------------------------------------------
     progress(4, 75, `Creating and restoring local database "${databaseName}"...`);
     log(`Preparing local database [${databaseName}] (dropIfExists: ${dropIfExists})...`);
-    await localDb.prepareLocalDatabase(databaseName, dropIfExists);
+    const { skipBinlog } = await localDb.prepareLocalDatabase(databaseName, dropIfExists);
 
-    log(`Streaming & decompressing schema and data into local MySQL...`);
-    await localDb.importSqlDump(databaseName, dumpFilePath, (msg) => log(msg));
+    log(`Streaming & decompressing schema and data into local MySQL${skipBinlog ? ' (binary log off for this import)' : ''}...`);
+    await localDb.importSqlDump(databaseName, dumpFilePath, (msg) => log(msg), { skipBinlog });
 
     const dbStats = await localDb.getLocalDatabaseStats(databaseName);
     log(`✅ Local database restored! Total tables: ${dbStats.tableCount}`, 'success');
@@ -236,8 +251,12 @@ app.get('/api/pull', async (req, res) => {
     });
 
     log(`Registered domain: ${domain} -> ${tenantId} in local ${localCentralDb}`, 'success');
-    if (regResult.localDomain) {
-      log(`🌐 Registered local test domain: [http://${regResult.localDomain}]`, 'success');
+    // Link to open the tenant in the local app (CMS runs on :8080 via docker-compose).
+    const localUrl = regResult.localDomain
+      ? `http://${regResult.localDomain}${sys.localAppPort ? `:${sys.localAppPort}` : ''}`
+      : null;
+    if (localUrl) {
+      log(`🌐 Registered local test domain: [${localUrl}]`, 'success');
     }
 
     // Clean up dump file after successful import
@@ -260,6 +279,7 @@ app.get('/api/pull', async (req, res) => {
       tenantId,
       domain,
       localDomain: regResult.localDomain,
+      localUrl,
       dbName: databaseName,
       tableCount: dbStats.tableCount,
       fileSizeMb,
@@ -276,7 +296,7 @@ app.get('/api/pull', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`\n====================================================`);
-  console.log(`🚀 LMS/TMS Database Retrieval Tool is running!`);
+  console.log(`🚀 LMS/TMS/CMS Database Retrieval Tool is running!`);
   console.log(`👉 Open http://localhost:${PORT} in your web browser`);
   console.log(`====================================================\n`);
 });

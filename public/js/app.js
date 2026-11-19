@@ -46,22 +46,25 @@ document.addEventListener('DOMContentLoaded', () => {
     try {
       const res = await fetch('/api/test-connection');
       const data = await res.json();
-      
+
       const isLocalOk = data.local?.success;
-      const isPmaOk = data.prodPma?.success;
-      const isDirectOk = data.prodDirect?.success;
+      const systems = Object.values(data.systems || {});
+      // A system is reachable if direct MySQL or its phpMyAdmin works.
+      const reachable = systems.filter(s => s.direct?.success || s.pma?.success);
+      const allDirect = systems.length > 0 && systems.every(s => s.direct?.success);
 
       const dot = connStatusBadge.querySelector('.status-dot');
 
-      if (isLocalOk && (isDirectOk || isPmaOk)) {
+      if (isLocalOk && systems.length > 0 && reachable.length === systems.length) {
         dot.className = 'status-dot online';
-        connStatusText.textContent = isDirectOk ? 'Direct MySQL & Local Connected' : 'PMA HTTPS & Local Connected';
+        connStatusText.textContent = allDirect ? 'All Servers (Direct) & Local Connected' : 'All Servers & Local Connected';
       } else if (isLocalOk) {
         dot.className = 'status-dot warning';
-        connStatusText.textContent = 'Local MySQL Ready (Prod Auth Needed)';
+        const down = systems.filter(s => !(s.direct?.success || s.pma?.success)).map(s => s.label);
+        connStatusText.textContent = down.length ? `Local Ready, unreachable: ${down.join(', ')}` : 'Local MySQL Ready';
       } else {
         dot.className = 'status-dot offline';
-        connStatusText.textContent = 'Local Laragon MySQL Disconnected';
+        connStatusText.textContent = 'Local MySQL Disconnected';
       }
     } catch {
       connStatusText.textContent = 'Server Offline';
@@ -190,8 +193,9 @@ document.addEventListener('DOMContentLoaded', () => {
       resTableCount.textContent = `${data.tableCount} tables`;
       resDuration.textContent = `${data.durationSeconds}s (${data.fileSizeMb} MB)`;
       
-      const localHostUrl = data.localDomain ? `http://${data.localDomain}` : `http://localhost`;
-      resLocalUrl.textContent = data.localDomain || 'localhost';
+      // localUrl includes the local app port when set (CMS: :8080).
+      const localHostUrl = data.localUrl || (data.localDomain ? `http://${data.localDomain}` : 'http://localhost');
+      resLocalUrl.textContent = localHostUrl.replace(/^https?:\/\//, '');
       openLocalAppBtn.href = localHostUrl;
 
       resultCard.classList.remove('d-none');
@@ -274,21 +278,67 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // 8. Settings Modal Configuration
   const settingsModal = document.getElementById('settingsModal');
+  const systemsSettings = document.getElementById('systemsSettings');
+  // Fields of each system block: [key in config, label, input type, column width]
+  const SYSTEM_FIELDS = [
+    ['host', 'Host / IP', 'text', 'col-md-8'],
+    ['port', 'Port', 'number', 'col-md-4'],
+    ['username', 'Username', 'text', 'col-md-6'],
+    ['password', 'Password', 'password', 'col-md-6'],
+    ['centralDb', 'Production Central DB', 'text', 'col-md-6'],
+    ['localCentralDb', 'Local Central DB', 'text', 'col-md-6'],
+    ['pmaUrl', 'phpMyAdmin URL (fallback when port 3306 is closed)', 'text', 'col-md-8'],
+    ['localAppPort', 'Local App Port (empty = 80)', 'text', 'col-md-4'],
+  ];
+  let loadedSystemKeys = [];
+
+  function renderSystemsSettings(systems) {
+    loadedSystemKeys = Object.keys(systems);
+    systemsSettings.innerHTML = '';
+    for (const key of loadedSystemKeys) {
+      const sys = systems[key];
+      const block = document.createElement('div');
+      block.className = 'mb-4';
+      const title = document.createElement('h6');
+      title.className = 'fw-bold text-primary mb-3';
+      title.innerHTML = '<i class="fa-solid fa-cloud me-2"></i>';
+      title.append(`${sys.label}: Production Server`);
+      const row = document.createElement('div');
+      row.className = 'row g-3';
+      for (const [field, label, type, col] of SYSTEM_FIELDS) {
+        const wrap = document.createElement('div');
+        wrap.className = col;
+        const lbl = document.createElement('label');
+        lbl.className = 'form-label fs-7';
+        lbl.textContent = label;
+        const input = document.createElement('input');
+        input.type = type;
+        input.className = 'form-control font-monospace';
+        input.id = `cfg_${key}_${field}`;
+        if (field === 'password') {
+          input.placeholder = sys.hasPassword ? '(set, leave empty to keep current)' : '(not set)';
+        } else {
+          input.value = sys[field] ?? '';
+        }
+        wrap.append(lbl, input);
+        row.appendChild(wrap);
+      }
+      block.append(title, row);
+      systemsSettings.appendChild(block);
+    }
+  }
+
   settingsModal.addEventListener('show.bs.modal', async () => {
     try {
       const res = await fetch('/api/config');
       const cfg = await res.json();
-      
-      document.getElementById('cfgProdHost').value = cfg.prodHost;
-      document.getElementById('cfgProdPort').value = cfg.prodPort;
-      document.getElementById('cfgProdUsername').value = cfg.prodUsername;
-      document.getElementById('cfgProdTmsDb').value = cfg.prodTmsDb;
-      document.getElementById('cfgProdLmsDb').value = cfg.prodLmsDb;
-      document.getElementById('cfgPmaUrl').value = cfg.pmaUrl;
 
-      document.getElementById('cfgLocalHost').value = cfg.localHost;
-      document.getElementById('cfgLocalPort').value = cfg.localPort;
-      document.getElementById('cfgLocalUsername').value = cfg.localUsername;
+      renderSystemsSettings(cfg.systems || {});
+
+      document.getElementById('cfgLocalHost').value = cfg.local.host;
+      document.getElementById('cfgLocalPort').value = cfg.local.port;
+      document.getElementById('cfgLocalUsername').value = cfg.local.username;
+      document.getElementById('cfgLocalPassword').placeholder = cfg.local.hasPassword ? '(set, leave empty to keep current)' : '(empty by default)';
 
       document.getElementById('cfgMysqlBin').value = cfg.mysqlBin;
       document.getElementById('cfgMysqldumpBin').value = cfg.mysqldumpBin;
@@ -307,24 +357,23 @@ document.addEventListener('DOMContentLoaded', () => {
       const res = await fetch('/api/test-connection');
       const data = await res.json();
 
-      let html = '';
-      // Local
-      html += `<div class="${data.local?.success ? 'text-success' : 'text-danger'} mb-1">
-        <i class="fa-solid ${data.local?.success ? 'fa-check' : 'fa-xmark'} me-1"></i>
-        <strong>Local MySQL:</strong> ${data.local?.message}
-      </div>`;
-      // Direct Prod
-      html += `<div class="${data.prodDirect?.success ? 'text-success' : 'text-warning'} mb-1">
-        <i class="fa-solid ${data.prodDirect?.success ? 'fa-check' : 'fa-triangle-exclamation'} me-1"></i>
-        <strong>Prod Direct (Port 3306):</strong> ${data.prodDirect?.message}
-      </div>`;
-      // PMA Prod
-      html += `<div class="${data.prodPma?.success ? 'text-success' : 'text-danger'} mb-1">
-        <i class="fa-solid ${data.prodPma?.success ? 'fa-check' : 'fa-xmark'} me-1"></i>
-        <strong>Prod phpMyAdmin (HTTPS):</strong> ${data.prodPma?.message}
-      </div>`;
+      // Built with textContent: messages contain server errors and must not be parsed as HTML.
+      connTestResults.innerHTML = '';
+      const addLine = (ok, okClass, failClass, failIcon, label, message) => {
+        const div = document.createElement('div');
+        div.className = `${ok ? okClass : failClass} mb-1`;
+        div.innerHTML = `<i class="fa-solid ${ok ? 'fa-check' : failIcon} me-1"></i>`;
+        const strong = document.createElement('strong');
+        strong.textContent = `${label}: `;
+        div.append(strong, message || '');
+        connTestResults.appendChild(div);
+      };
 
-      connTestResults.innerHTML = html;
+      addLine(data.local?.success, 'text-success', 'text-danger', 'fa-xmark', 'Local MySQL', data.local?.message);
+      for (const sys of Object.values(data.systems || {})) {
+        addLine(sys.direct?.success, 'text-success', 'text-warning', 'fa-triangle-exclamation', `${sys.label} Direct (3306)`, sys.direct?.message);
+        addLine(sys.pma?.success, 'text-success', 'text-danger', 'fa-xmark', `${sys.label} phpMyAdmin`, sys.pma?.message);
+      }
       checkStatus();
     } catch (err) {
       connTestResults.innerHTML = `<div class="text-danger">Test failed: ${err.message}</div>`;
@@ -336,27 +385,31 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Save Settings
   saveSettingsBtn.addEventListener('click', async () => {
+    const systems = {};
+    for (const key of loadedSystemKeys) {
+      systems[key] = {};
+      for (const [field] of SYSTEM_FIELDS) {
+        const raw = document.getElementById(`cfg_${key}_${field}`).value;
+        const value = field === 'password' ? raw : raw.trim();
+        if (field === 'password' && value === '') continue; // empty = keep current password
+        systems[key][field] = field === 'port' ? parseInt(value, 10) : value;
+      }
+    }
+
     const payload = {
-      prodHost: document.getElementById('cfgProdHost').value.trim(),
-      prodPort: parseInt(document.getElementById('cfgProdPort').value.trim(), 10),
-      prodUsername: document.getElementById('cfgProdUsername').value.trim(),
-      prodTmsDb: document.getElementById('cfgProdTmsDb').value.trim(),
-      prodLmsDb: document.getElementById('cfgProdLmsDb').value.trim(),
-      pmaUrl: document.getElementById('cfgPmaUrl').value.trim(),
-      localHost: document.getElementById('cfgLocalHost').value.trim(),
-      localPort: parseInt(document.getElementById('cfgLocalPort').value.trim(), 10),
-      localUsername: document.getElementById('cfgLocalUsername').value.trim(),
+      systems,
+      local: {
+        host: document.getElementById('cfgLocalHost').value.trim(),
+        port: parseInt(document.getElementById('cfgLocalPort').value.trim(), 10),
+        username: document.getElementById('cfgLocalUsername').value.trim(),
+      },
       mysqlBin: document.getElementById('cfgMysqlBin').value.trim(),
       mysqldumpBin: document.getElementById('cfgMysqldumpBin').value.trim(),
     };
 
-    const newProdPass = document.getElementById('cfgProdPassword').value;
-    if (newProdPass) {
-      payload.prodPassword = newProdPass;
-    }
     const newLocalPass = document.getElementById('cfgLocalPassword').value;
     if (newLocalPass !== '') {
-      payload.localPassword = newLocalPass;
+      payload.local.password = newLocalPass;
     }
 
     try {
